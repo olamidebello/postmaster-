@@ -1,0 +1,5 @@
+---
+# Deploys current main, including provider keys and workspace token controls.
+# This entry point does not grant additional account privileges.
+- name: Deploy Postmaster super admin controls on Olamidepanel
+  ansible.builtin.import_playbook: olamidepanel.yml
