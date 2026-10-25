@@ -1,3 +1,20 @@
 ---
 - name: Deploy marketplace and payment gateways on Olamidepanel
   ansible.builtin.import_playbook: olamidepanel.yml
+
+- name: Populate recommended Postmaster marketplace services
+  hosts: all
+  become: true
+  tasks:
+    - name: Insert missing starter products without replacing operator edits
+      become_user: postmaster
+      ansible.builtin.command:
+        argv: [/opt/postmaster/venv/bin/python, -m, app.starter_catalog]
+        chdir: /opt/postmaster/repo
+      environment:
+        POSTMASTER_DATA: /var/lib/postmaster
+      register: marketplace_seed
+      changed_when: (marketplace_seed.stdout | from_json).added > 0
+    - name: Report starter product population
+      ansible.builtin.debug:
+        msg: "{{ marketplace_seed.stdout | from_json }}"
