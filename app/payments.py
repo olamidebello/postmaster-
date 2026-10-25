@@ -2,7 +2,7 @@
 import os,time
 from .core import *
 from .credentials import get
-def ready():return bool(get('STRIPE_SECRET_KEY') and get('STRIPE_WEBHOOK_SECRET'))
+def ready():return get('STRIPE_ENABLED','true')=='true' and bool(get('STRIPE_SECRET_KEY') and get('STRIPE_WEBHOOK_SECRET'))
 def checkout(c,tenant,user,amount):
     require(ready(),'Card funding is not configured',503);require(type(amount)==int and 500<=amount<=1000000,'Top-up must be $5–$10,000')
     import stripe
@@ -12,7 +12,7 @@ def checkout(c,tenant,user,amount):
     except stripe.StripeError:raise Problem('Payment provider unavailable; try again later',503)
     c.execute('INSERT INTO checkouts VALUES(?,?,?,0,?)',(result.id,tenant,amount,now()));audit(c,tenant,user,'checkout.created',result.id);return {'url':result.url}
 def webhook(c,raw,signature):
-    require(ready(),'Payments not configured',503)
+    require(get('STRIPE_SECRET_KEY') and get('STRIPE_WEBHOOK_SECRET'),'Payments not configured',503)
     import stripe
     try:event=stripe.Webhook.construct_event(raw,signature,get('STRIPE_WEBHOOK_SECRET'),tolerance=300)
     except (ValueError,stripe.SignatureVerificationError):raise Problem('Invalid payment signature',400)
