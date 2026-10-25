@@ -1,0 +1,202 @@
+---
+- name: Install or update Postmaster on Debian 12+
+  hosts: all
+  become: true
+  vars:
+    postmaster_repo: https://github.com/olamidebello/postmaster-.git
+    postmaster_revision: main
+    postmaster_domain: "{{ lookup('env', 'POSTMASTER_DOMAIN') }}"
+    postmaster_email: "{{ lookup('env', 'POSTMASTER_TLS_EMAIL') }}"
+    postmaster_tls: true
+    postmaster_port: 18870
+    postmaster_root: /opt/postmaster
+  tasks:
+    - name: Validate domain and certificate contact
+      ansible.builtin.assert:
+        that:
+          - postmaster_domain is match('^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$')
+          - "'.' in postmaster_domain"
+          - not postmaster_tls or '@' in postmaster_email
+        fail_msg: Set POSTMASTER_DOMAIN and POSTMASTER_TLS_EMAIL before deployment.
+    - name: Install system dependencies
+      ansible.builtin.apt:
+        name: [git, python3, python3-venv, nginx, certbot, python3-certbot-nginx]
+        update_cache: true
+        state: present
+    - name: Create restricted service user
+      ansible.builtin.user:
+        name: postmaster
+        system: true
+        home: /var/lib/postmaster
+        shell: /usr/sbin/nologin
+    - name: Prepare application root
+      ansible.builtin.file:
+        path: "{{ postmaster_root }}"
+        state: directory
+        mode: '0755'
+    - name: Pull application source
+      ansible.builtin.git:
+        repo: "{{ postmaster_repo }}"
+        dest: "{{ postmaster_root }}/repo"
+        version: "{{ postmaster_revision }}"
+        force: false
+      notify: Restart postmaster
+    - name: Install pinned Python dependencies
+      ansible.builtin.pip:
+        requirements: "{{ postmaster_root }}/repo/requirements.txt"
+        virtualenv: "{{ postmaster_root }}/venv"
+        virtualenv_command: python3 -m venv
+      notify: Restart postmaster
+    - name: Prepare protected data and config directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: postmaster
+        group: postmaster
+        mode: '0700'
+      loop: [/var/lib/postmaster, /etc/postmaster]
+    - name: Create initial environment without replacing existing secrets
+      ansible.builtin.copy:
+        dest: /etc/postmaster/environment
+        owner: root
+        group: postmaster
+        mode: '0640'
+        force: false
+        content: |
+          POSTMASTER_DATA=/var/lib/postmaster
+          PUBLIC_URL=https://{{ postmaster_domain }}
+          POSTMASTER_INSECURE=0
+          SMTP_HOST=
+          SMTP_PORT=587
+          SMTP_FROM=
+          SMTP_USER=
+          SMTP_PASSWORD=
+          STRIPE_SECRET_KEY=
+          STRIPE_WEBHOOK_SECRET=
+    - name: Initialize database as service user
+      become_user: postmaster
+      ansible.builtin.command:
+        argv: ["{{ postmaster_root }}/venv/bin/python", -m, app.server, init]
+        chdir: "{{ postmaster_root }}/repo"
+      environment:
+        POSTMASTER_DATA: /var/lib/postmaster
+      changed_when: false
+    - name: Install hardened application service
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/postmaster.service
+        mode: '0644'
+        content: |
+          [Unit]
+          Description=Postmaster web application
+          After=network.target
+          [Service]
+          User=postmaster
+          Group=postmaster
+          WorkingDirectory={{ postmaster_root }}/repo
+          EnvironmentFile=/etc/postmaster/environment
+          ExecStart={{ postmaster_root }}/venv/bin/gunicorn --bind 127.0.0.1:{{ postmaster_port }} --workers 2 --threads 4 --timeout 90 --access-logfile - app.server:application
+          Restart=on-failure
+          UMask=0077
+          NoNewPrivileges=true
+          PrivateTmp=true
+          ProtectSystem=strict
+          ProtectHome=true
+          ReadWritePaths=/var/lib/postmaster
+          [Install]
+          WantedBy=multi-user.target
+      notify: Restart postmaster
+    - name: Install scheduled order service
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/postmaster-worker.service
+        mode: '0644'
+        content: |
+          [Unit]
+          Description=Release scheduled mail and expire previews
+          [Service]
+          Type=oneshot
+          User=postmaster
+          Group=postmaster
+          WorkingDirectory={{ postmaster_root }}/repo
+          EnvironmentFile=/etc/postmaster/environment
+          ExecStart={{ postmaster_root }}/venv/bin/python -m app.worker
+          UMask=0077
+          NoNewPrivileges=true
+          ProtectSystem=strict
+          ReadWritePaths=/var/lib/postmaster
+    - name: Install worker timer
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/postmaster-worker.timer
+        mode: '0644'
+        content: |
+          [Unit]
+          Description=Check Postmaster queue each minute
+          [Timer]
+          OnBootSec=1min
+          OnUnitActiveSec=1min
+          Persistent=true
+          [Install]
+          WantedBy=timers.target
+    - name: Install HTTP reverse proxy only when new
+      ansible.builtin.copy:
+        dest: "/etc/nginx/sites-available/postmaster-{{ postmaster_domain }}"
+        force: false
+        mode: '0644'
+        content: |
+          server {
+            listen 80;
+            server_name {{ postmaster_domain }};
+            client_max_body_size 22m;
+            location / {
+              proxy_pass http://127.0.0.1:{{ postmaster_port }};
+              proxy_set_header Host $host;
+              proxy_set_header X-Real-IP $remote_addr;
+              proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+              proxy_read_timeout 90s;
+            }
+          }
+      notify: Reload nginx
+    - name: Enable site
+      ansible.builtin.file:
+        src: "/etc/nginx/sites-available/postmaster-{{ postmaster_domain }}"
+        dest: "/etc/nginx/sites-enabled/postmaster-{{ postmaster_domain }}"
+        state: link
+      notify: Reload nginx
+    - name: Check nginx configuration
+      ansible.builtin.command: nginx -t
+      changed_when: false
+    - name: Enable services
+      ansible.builtin.systemd:
+        name: "{{ item }}"
+        daemon_reload: true
+        enabled: true
+        state: started
+      loop: [postmaster.service, postmaster-worker.timer, nginx]
+    - name: Apply service changes before health verification
+      ansible.builtin.meta: flush_handlers
+    - name: Obtain certificate and force HTTPS
+      ansible.builtin.command:
+        argv: [certbot, --nginx, -d, "{{ postmaster_domain }}", --non-interactive, --agree-tos, --email, "{{ postmaster_email }}", --redirect, --keep-until-expiring]
+      when: postmaster_tls | bool
+      register: postmaster_cert
+      changed_when: "'Successfully received certificate' in postmaster_cert.stdout"
+    - name: Verify local application health
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ postmaster_port }}/api/health"
+        return_content: true
+      register: postmaster_health
+      retries: 10
+      delay: 2
+      until: postmaster_health.status == 200
+    - name: Report next setup step
+      ansible.builtin.debug:
+        msg: "Postmaster installed. Create admin: cd {{ postmaster_root }}/repo && sudo -u postmaster env POSTMASTER_DATA=/var/lib/postmaster {{ postmaster_root }}/venv/bin/python -m app.server admin --email YOUR_EMAIL. Configure SMTP in /etc/postmaster/environment."
+  handlers:
+    - name: Restart postmaster
+      ansible.builtin.systemd:
+        name: postmaster
+        daemon_reload: true
+        state: restarted
+    - name: Reload nginx
+      ansible.builtin.service:
+        name: nginx
+        state: reloaded
