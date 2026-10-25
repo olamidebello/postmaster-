@@ -1,0 +1,3 @@
+---
+- name: Deploy marketplace and payment gateways on Olamidepanel
+  ansible.builtin.import_playbook: olamidepanel.yml
