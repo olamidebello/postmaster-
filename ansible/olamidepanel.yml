@@ -1,0 +1,43 @@
+---
+# Run on the Olamidepanel host as root. Uses the existing deployment lifecycle.
+- name: Deploy Postmaster alongside Olamidepanel
+  ansible.builtin.import_playbook: pull-and-deploy.yml
+  vars:
+    postmaster_domain: postmaster.justisolve.com
+    postmaster_email: "{{ lookup('env', 'POSTMASTER_TLS_EMAIL') | default('olamideolatayobellocorporation@gmail.com', true) }}"
+    postmaster_tls: true
+    postmaster_port: 18870
+    postmaster_root: /opt/postmaster
+
+- name: Verify the Olamidepanel Postmaster HTTPS virtual host
+  hosts: all
+  become: true
+  tasks:
+    - name: Verify certificate trust and exact hostname on local Nginx
+      ansible.builtin.command:
+        argv:
+          - python3
+          - -c
+          - |
+            import socket, ssl
+            hostname = "postmaster.justisolve.com"
+            context = ssl.create_default_context()
+            with socket.create_connection(("127.0.0.1", 443), timeout=15) as sock:
+                with context.wrap_socket(sock, server_hostname=hostname) as secure:
+                    print("Trusted certificate verified for " + hostname)
+      changed_when: false
+
+    - name: Verify public HTTPS application health
+      ansible.builtin.uri:
+        url: https://postmaster.justisolve.com/api/health
+        validate_certs: true
+        status_code: 200
+        return_content: true
+      register: postmaster_public_health
+      retries: 5
+      delay: 3
+      until: postmaster_public_health.status == 200
+
+    - name: Report deployment
+      ansible.builtin.debug:
+        msg: "Postmaster deployed at https://postmaster.justisolve.com. Olamidepanel's own service and other sites are preserved. To create the first admin, follow README.md."
