@@ -1,7 +1,7 @@
 """Protected, atomic runtime provider configuration; never return secret values."""
 import fcntl, json, os, tempfile
 from .core import DATA, require
-FIELDS={'SMTP_HOST','SMTP_PORT','SMTP_FROM','SMTP_USER','SMTP_PASSWORD','STRIPE_SECRET_KEY','STRIPE_WEBHOOK_SECRET'}
+FIELDS={'STRIPE_ENABLED','PAYSTACK_ENABLED','PAYSTACK_SECRET_KEY','SMTP_HOST','SMTP_PORT','SMTP_FROM','SMTP_USER','SMTP_PASSWORD','STRIPE_SECRET_KEY','STRIPE_WEBHOOK_SECRET'}
 def saved():
     path=DATA/'provider-credentials.json'
     if not path.exists(): return {}
@@ -14,6 +14,7 @@ def statuses():
 def update(key,value):
     require(key in FIELDS,'Unsupported provider setting')
     require(isinstance(value,str) and len(value)<=4096 and not any(x in value for x in ('\n','\r','\x00')),'Invalid setting value')
+    if key in ('STRIPE_ENABLED','PAYSTACK_ENABLED'): require(value in ('true','false'),'Use true or false')
     if key=='SMTP_PORT' and value: require(value.isdigit() and 1<=int(value)<=65535,'Invalid SMTP port')
     DATA.mkdir(parents=True,exist_ok=True,mode=0o700)
     lock=os.open(DATA/'provider-credentials.lock',os.O_CREAT|os.O_RDWR,0o600)
