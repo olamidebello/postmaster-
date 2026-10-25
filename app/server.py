@@ -4,14 +4,15 @@ from email.message import EmailMessage
 from urllib.parse import parse_qs
 from wsgiref.simple_server import make_server
 from .core import *
+from . import credentials
 MAX_BODY=22*1024*1024
 ATTEMPTS={}
 def send_email(to,subject,body):
-    require(os.environ.get('SMTP_HOST'),'Email delivery is not configured',503)
-    message=EmailMessage(); message['From']=os.environ.get('SMTP_FROM','postmaster@localhost'); message['To']=to; message['Subject']=subject; message.set_content(body)
-    with smtplib.SMTP(os.environ['SMTP_HOST'],int(os.environ.get('SMTP_PORT','587')),timeout=15) as smtp:
+    require(credentials.get('SMTP_HOST'),'Email delivery is not configured',503)
+    message=EmailMessage(); message['From']=credentials.get('SMTP_FROM','postmaster@localhost'); message['To']=to; message['Subject']=subject; message.set_content(body)
+    with smtplib.SMTP(credentials.get('SMTP_HOST'),int(credentials.get('SMTP_PORT','587')),timeout=15) as smtp:
         smtp.starttls()
-        if os.environ.get('SMTP_USER'): smtp.login(os.environ['SMTP_USER'],os.environ.get('SMTP_PASSWORD',''))
+        if credentials.get('SMTP_USER'): smtp.login(credentials.get('SMTP_USER'),credentials.get('SMTP_PASSWORD',''))
         smtp.send_message(message)
 def client_ip(r):
     addr=r.env.get('REMOTE_ADDR','')
@@ -41,7 +42,7 @@ class Request:
         require(self.user and self.user['active'],'Account unavailable',403)
         member=c.execute('SELECT role FROM members WHERE tenant_id=? AND user_id=?',(self.tenant,self.user['id'])).fetchone(); require(member,'Workspace access revoked',403); self.role=member['role']
     def can(self,*roles): require(self.role in roles,'Your role cannot perform this action',403)
-    def admin(self): require(self.user['superadmin'],'Super administrator access required',403)
+    def admin(self): require(not self.token_auth and self.user['superadmin'],'Super administrator access required',403)
     def cookie(self,token): self.headers.append(('Set-Cookie','session='+token+'; Path=/; HttpOnly; SameSite=Lax; Max-Age=43200'+('' if os.environ.get('POSTMASTER_INSECURE')=='1' else '; Secure')))
 def session(c,r,user,tenant):
     token=secrets.token_urlsafe(40); csrf=secrets.token_urlsafe(32)
@@ -65,7 +66,7 @@ def dispatch(c,r):
         tenant=c.execute('SELECT tenant_id FROM members WHERE user_id=? ORDER BY rowid LIMIT 1',(u['id'],)).fetchone(); require(tenant,'No workspace access',403)
         audit(c,tenant[0],u['id'],'account.login'); return session(c,r,u['id'],tenant[0])
     if p=='/api/password-reset' and method=='POST':
-        limit('reset:'+client_ip(r)); em=email(b.get('email')); require(os.environ.get('SMTP_HOST'),'Password reset email is not configured',503)
+        limit('reset:'+client_ip(r)); em=email(b.get('email')); require(credentials.get('SMTP_HOST'),'Password reset email is not configured',503)
         u=c.execute('SELECT * FROM users WHERE email=?',(em,)).fetchone()
         if u:
             token=secrets.token_urlsafe(40); c.execute('INSERT INTO resets VALUES(?,?,?)',(digest(token),u['id'],int(time.time())+1800)); send_email(em,'Reset your Postmaster password',os.environ.get('PUBLIC_URL','http://localhost:8080')+'/#reset='+token)
@@ -207,8 +208,11 @@ def safe_csv(value): return "'"+value if value.startswith(('=','+','-','@','\t',
 
 def admin(c,r):
     p=r.path; b=r.body; user=r.user['id']
-    if p=='/api/admin/audit' and r.method=='GET': return [dict(x) for x in c.execute('SELECT * FROM audit ORDER BY id DESC LIMIT 1000')]
-    if p=='/api/admin/overview': return {'tenants':[dict(x) for x in c.execute('SELECT * FROM tenants ORDER BY created DESC')],'users':[dict(x) for x in c.execute('SELECT id,email,name,active,superadmin,created FROM users ORDER BY created DESC')],'mail':[resource(x) for x in c.execute('SELECT * FROM mail ORDER BY created DESC LIMIT 1000')],'banks':[resource(x) for x in c.execute("SELECT * FROM resources WHERE kind='banks'")],'tickets':[resource(x) for x in c.execute("SELECT * FROM resources WHERE kind='tickets'")],'readiness':{'smtp':bool(os.environ.get('SMTP_HOST')),'fulfillment':'manual','payments':'stripe' if __import__('app.payments',fromlist=['ready']).ready() else 'manual audited credits','bank_verification':'operator verified provider reference required'}}
+    if p=='/api/admin/keys' and r.method=='GET': return credentials.statuses()
+    if p=='/api/admin/tokens' and r.method=='GET':
+        return [dict(x) for x in c.execute('SELECT a.id,a.name,a.tenant_id,a.user_id,a.created,u.email,t.name AS workspace FROM api_tokens a JOIN users u ON u.id=a.user_id JOIN tenants t ON t.id=a.tenant_id ORDER BY a.created DESC')]
+    if p=='/api/admin/audit'  and r.method=='GET': return [dict(x) for x in c.execute('SELECT * FROM audit ORDER BY id DESC LIMIT 1000')]
+    if p=='/api/admin/overview': return {'tenants':[dict(x) for x in c.execute('SELECT * FROM tenants ORDER BY created DESC')],'users':[dict(x) for x in c.execute('SELECT id,email,name,active,superadmin,created FROM users ORDER BY created DESC')],'mail':[resource(x) for x in c.execute('SELECT * FROM mail ORDER BY created DESC LIMIT 1000')],'banks':[resource(x) for x in c.execute("SELECT * FROM resources WHERE kind='banks'")],'tickets':[resource(x) for x in c.execute("SELECT * FROM resources WHERE kind='tickets'")],'readiness':{'smtp':bool(credentials.get('SMTP_HOST')),'fulfillment':'manual','payments':'stripe' if __import__('app.payments',fromlist=['ready']).ready() else 'manual audited credits','bank_verification':'operator verified provider reference required'}}
     if p.startswith('/api/admin/print/') and r.method=='GET':
         ident=p.split('/')[-1]; row=c.execute('SELECT * FROM mail WHERE id=?',(ident,)).fetchone(); require(row and row['kind']=='letter','Written letter not found',404); require(not json.loads(row['data']).get('document_id'),'Use uploaded source PDF'); from .printing import letter_pdf; audit(c,row['tenant_id'],user,'admin.print_download',ident); return (letter_pdf(json.loads(row['data']),cover=True),'application/pdf')
     if p.startswith('/api/admin/document/') and r.method=='GET':
@@ -229,6 +233,13 @@ def admin(c,r):
         c.execute('UPDATE users SET superadmin=? WHERE id=?',(int(b['superadmin']),target['id']))
         c.execute('DELETE FROM sessions WHERE user_id=?',(target['id'],))
         audit(c,None,user,'admin.user_role',target['id']+' '+str(b['superadmin'])); return {'ok':True}
+    if p=='/api/admin/keys':
+        key=b.get('key'); credentials.update(key,b.get('value'))
+        audit(c,None,user,'admin.provider_setting',key); return {'ok':True}
+    if p=='/api/admin/revoke-token':
+        row=c.execute('SELECT id,tenant_id FROM api_tokens WHERE id=?',(b.get('id'),)).fetchone(); require(row,'Token not found',404)
+        c.execute('DELETE FROM api_tokens WHERE id=?',(row['id'],))
+        audit(c,row['tenant_id'],user,'admin.token_revoked',row['id']); return {'ok':True}
     if p=='/api/admin/credit':
         amount=b.get('amount_cents'); require(type(amount)==int and 1<=amount<=10000000,'Credit must be 1–10,000,000 cents'); require(b.get('reason'),'Payment reference or credit reason required'); money(c,b.get('tenant_id'),amount,str(b['reason'])); audit(c,b.get('tenant_id'),user,'admin.credit',str(amount)+' '+str(b['reason'])); return {'ok':True}
     if p=='/api/admin/plan':
