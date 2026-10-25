@@ -176,6 +176,30 @@ def dispatch(c,r):
         r.can('owner','admin')
         from .payments import checkout
         return checkout(c,tenant,user,b.get('amount_cents'))
+    if p=='/api/gateways' and method=='GET':
+        from . import payments,paystack_gateway
+        return {'stripe':payments.ready(),'paystack':paystack_gateway.ready(),'manual':True,'currency':'USD'}
+    if p=='/api/billing/paystack' and method=='POST':
+        r.can('owner','admin')
+        from .paystack_gateway import checkout
+        return checkout(c,tenant,user,r.user['email'],b.get('amount_cents'))
+    if p=='/api/billing/paystack/verify' and method=='POST':
+        r.can('owner','admin')
+        from .paystack_gateway import verify
+        return verify(c,tenant,user,b.get('reference'))
+    if p=='/api/billing/pending' and method=='GET':
+        r.can('owner','admin')
+        return [dict(x) for x in c.execute('SELECT id,provider,amount,currency,created FROM gateway_checkouts WHERE tenant_id=? AND credited=0 ORDER BY created DESC LIMIT 50',(tenant,))]
+    if p=='/api/marketplace' and method=='GET':
+        from .marketplace import catalog
+        return catalog(c)
+    if p=='/api/marketplace/orders' and method=='GET':
+        from .marketplace import orders
+        return orders(c,tenant)
+    if p=='/api/marketplace/purchase' and method=='POST':
+        require(not r.token_auth,'Use an authenticated session',403);r.can('owner','admin')
+        from .marketplace import purchase
+        return purchase(c,tenant,user,b)
     if p=='/api/ledger': return [dict(x) for x in c.execute('SELECT * FROM ledger WHERE tenant_id=? ORDER BY created DESC LIMIT 1000',(tenant,))]
     if p=='/api/team':
         r.can('owner','admin'); return [dict(x) for x in c.execute('SELECT u.id,u.email,u.name,u.active,m.role FROM users u JOIN members m ON u.id=m.user_id WHERE m.tenant_id=?',(tenant,))]
@@ -208,6 +232,9 @@ def safe_csv(value): return "'"+value if value.startswith(('=','+','-','@','\t',
 
 def admin(c,r):
     p=r.path; b=r.body; user=r.user['id']
+    if p=='/api/admin/marketplace' and r.method=='GET':
+        from .marketplace import catalog,orders
+        return {'products':catalog(c,True),'orders':orders(c)}
     if p=='/api/admin/keys' and r.method=='GET': return credentials.statuses()
     if p=='/api/admin/tokens' and r.method=='GET':
         return [dict(x) for x in c.execute('SELECT a.id,a.name,a.tenant_id,a.user_id,a.created,u.email,t.name AS workspace FROM api_tokens a JOIN users u ON u.id=a.user_id JOIN tenants t ON t.id=a.tenant_id ORDER BY a.created DESC')]
@@ -233,6 +260,12 @@ def admin(c,r):
         c.execute('UPDATE users SET superadmin=? WHERE id=?',(int(b['superadmin']),target['id']))
         c.execute('DELETE FROM sessions WHERE user_id=?',(target['id'],))
         audit(c,None,user,'admin.user_role',target['id']+' '+str(b['superadmin'])); return {'ok':True}
+    if p=='/api/admin/marketplace/product':
+        from .marketplace import save
+        return save(c,user,b)
+    if p=='/api/admin/marketplace/order':
+        from .marketplace import update_order
+        return update_order(c,user,b)
     if p=='/api/admin/keys':
         key=b.get('key'); credentials.update(key,b.get('value'))
         audit(c,None,user,'admin.provider_setting',key); return {'ok':True}
