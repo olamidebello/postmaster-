@@ -28,6 +28,21 @@ class PlatformTests(unittest.TestCase):
         with core.connect() as c:c.execute('BEGIN IMMEDIATE');core.money(c,self.tenant,amount,'Test verified funds');c.commit()
     def promote(self):
         with core.connect() as c:c.execute('UPDATE users SET superadmin=1 WHERE id=?',(self.user,))
+    def test_platform_role_profile_and_audit_controls(self):
+        target=self.b.call('/me')[1]['user']['id']
+        self.assertEqual(self.a.call('/admin/user-role','POST',{'id':target,'superadmin':True})[0],403)
+        self.promote()
+        self.assertEqual(self.a.call('/admin/user-role','POST',{'id':self.user,'superadmin':False})[0],409)
+        self.assertEqual(self.a.call('/admin/user-edit','POST',{'id':target,'name':'Updated','email':'a@example.com'})[0],409)
+        self.assertEqual(self.a.call('/admin/user-edit','POST',{'id':target,'name':'Updated','email':'b@example.com'})[0],200)
+        self.assertEqual(self.a.call('/admin/user-role','POST',{'id':target,'superadmin':'true'})[0],400)
+        self.assertEqual(self.a.call('/admin/user-role','POST',{'id':target,'superadmin':True})[0],200)
+        self.assertEqual(self.b.call('/me')[0],401)
+        with core.connect() as c:
+            self.assertEqual(c.execute('SELECT superadmin FROM users WHERE id=?',(target,)).fetchone()[0],1)
+        logs=self.a.call('/admin/audit')[1]
+        self.assertTrue(any(x['action']=='admin.user_role' for x in logs))
+
     def test_brand_assets_served_and_traversal_rejected(self):
         for path in ['/assets/postmaster-mark.png','/assets/postmaster-concept-portrait.png']:
             result={};env={'REQUEST_METHOD':'GET','PATH_INFO':path}
