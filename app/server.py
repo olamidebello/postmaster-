@@ -238,7 +238,12 @@ def application(env,start_response):
     status=200; c=None
     try:
         if not env.get('PATH_INFO','/').startswith('/api/'):
-            assets={'/app.js':('app.js','text/javascript'),'/style.css':('style.css','text/css')}; filename,mime=assets.get(env.get('PATH_INFO'),('index.html','text/html')); payload=(ROOT/filename).read_bytes()
+            assets={'/app.js':('app.js','text/javascript'),'/style.css':('style.css','text/css'),'/assets/postmaster-mark.png':('assets/postmaster-mark.png','image/png'),'/assets/postmaster-concept-portrait.png':('assets/postmaster-concept-portrait.png','image/png')}
+            path=env.get('PATH_INFO','/')
+            require(not path.startswith('/assets/') or path in assets,'Asset not found',404)
+            filename,mime=assets.get(path,('index.html','text/html')); payload=(ROOT/filename).read_bytes()
+            if path in assets:
+                headers=[(k,v) for k,v in headers if k!='Cache-Control']+[('Cache-Control','public, max-age=3600')]
         else:
             r=Request(env); c=connect(); c.execute('BEGIN IMMEDIATE' if r.method!='GET' else 'BEGIN'); result=dispatch(c,r); c.commit(); headers.extend(r.headers)
             if isinstance(result,tuple): payload,mime=result

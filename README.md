@@ -72,3 +72,15 @@ ansible-playbook -i localhost, ansible/pull-and-deploy.yml --syntax-check
 ## Optional card funding
 
 Set `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, and an HTTPS `PUBLIC_URL` in the protected environment. Register `/api/payments/webhook` for `checkout.session.completed` and `checkout.session.async_payment_succeeded`. Restart the service. Billing shows hosted card checkout only when both keys are configured. Verify in Stripe test mode before accepting real payments. Credits require a matching stored checkout, paid status, currency, amount, workspace, and verified signature; redirects never grant funds. No live payment was attempted during development.
+
+## Brand identity and artwork
+
+The original envelope-in-flight mark appears in the header, sign-in screen, sidebar, favicon and touch icon. The concept portrait illustrates a digital document becoming a physical delivery and appears in the homepage hero and dashboard. Original PNG assets and final generation prompts are recorded in [the brand guide](docs/BRAND.md).
+
+A deployment wrapper is also available after cloning the repository:
+
+```bash
+sudo bash scripts/deploy.sh --domain mail.your-domain.com --email you@your-domain.com
+```
+
+The wrapper installs Ansible and pulls `main`; the playbook installs/updates the service, preserves configuration, obtains TLS, and checks health and branded asset delivery. Administrator creation remains the interactive step described above.

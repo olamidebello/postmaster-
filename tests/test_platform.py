@@ -28,6 +28,13 @@ class PlatformTests(unittest.TestCase):
         with core.connect() as c:c.execute('BEGIN IMMEDIATE');core.money(c,self.tenant,amount,'Test verified funds');c.commit()
     def promote(self):
         with core.connect() as c:c.execute('UPDATE users SET superadmin=1 WHERE id=?',(self.user,))
+    def test_brand_assets_served_and_traversal_rejected(self):
+        for path in ['/assets/postmaster-mark.png','/assets/postmaster-concept-portrait.png']:
+            result={};env={'REQUEST_METHOD':'GET','PATH_INFO':path}
+            payload=b''.join(application(env,lambda status,headers:result.update(status=status,headers=dict(headers))))
+            self.assertTrue(result['status'].startswith('200'));self.assertEqual(result['headers']['Content-Type'],'image/png');self.assertTrue(payload.startswith(b'\x89PNG\r\n\x1a\n'))
+        result={};payload=b''.join(application({'REQUEST_METHOD':'GET','PATH_INFO':'/assets/../server.py'},lambda status,headers:result.update(status=status)))
+        self.assertTrue(result['status'].startswith('404'))
     def test_tenant_isolation(self):
         status,resource=self.a.call('/resources/recipients','POST',self.mailing()['recipients'][0]);self.assertEqual(status,200)
         self.assertEqual(self.b.call('/resources/recipients')[1],[])
