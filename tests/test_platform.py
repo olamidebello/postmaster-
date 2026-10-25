@@ -43,6 +43,28 @@ class PlatformTests(unittest.TestCase):
         logs=self.a.call('/admin/audit')[1]
         self.assertTrue(any(x['action']=='admin.user_role' for x in logs))
 
+    def test_admin_provider_settings_and_token_revocation(self):
+        from app import credentials
+        path=core.DATA/'provider-credentials.json';path.unlink(missing_ok=True)
+        try:
+            self.assertEqual(self.a.call('/admin/keys')[0],403)
+            self.promote()
+            secret='sk_test_private_example'
+            self.assertEqual(self.a.call('/admin/keys','POST',{'key':'STRIPE_SECRET_KEY','value':secret})[0],200)
+            self.assertEqual(credentials.get('STRIPE_SECRET_KEY'),secret)
+            self.assertEqual(path.stat().st_mode & 0o777,0o600)
+            self.assertNotIn(secret,json.dumps(self.a.call('/admin/keys')[1]))
+            self.assertEqual(self.a.call('/admin/keys','POST',{'key':'SMTP_PORT','value':'wrong'})[0],400)
+            self.assertEqual(self.a.call('/admin/keys','POST',{'key':'PUBLIC_URL','value':'anything'})[0],400)
+            token=self.a.call('/tokens','POST',{'name':'Integration'})[1]
+            self.assertEqual(self.a.call('/admin/keys',HTTP_AUTHORIZATION='Bearer '+token['token'])[0],403)
+            listing=self.a.call('/admin/tokens')[1]
+            self.assertNotIn(token['token'],json.dumps(listing))
+            self.assertEqual(self.a.call('/admin/revoke-token','POST',{'id':token['id']})[0],200)
+            self.assertEqual(self.a.call('/mail',HTTP_AUTHORIZATION='Bearer '+token['token'])[0],401)
+            self.assertNotIn(secret,json.dumps(self.a.call('/admin/audit')[1]))
+        finally:path.unlink(missing_ok=True)
+
     def test_brand_assets_served_and_traversal_rejected(self):
         for path in ['/assets/postmaster-mark.png','/assets/postmaster-concept-portrait.png']:
             result={};env={'REQUEST_METHOD':'GET','PATH_INFO':path}
