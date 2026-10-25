@@ -1,0 +1,26 @@
+---
+- name: Deploy Postmaster on Olamidepanel
+  ansible.builtin.import_playbook: olamidepanel.yml
+
+- name: Promote the requested existing Postmaster account
+  hosts: all
+  become: true
+  tasks:
+    - name: Grant and verify requested super administrator access
+      become_user: postmaster
+      ansible.builtin.command:
+        argv:
+          - /opt/postmaster/venv/bin/python
+          - -m
+          - app.server
+          - promote
+          - --email
+          - dobcalldemo@gmail.com
+        chdir: /opt/postmaster/repo
+      environment:
+        POSTMASTER_DATA: /var/lib/postmaster
+      register: promotion
+      changed_when: false
+    - name: Report verified account
+      ansible.builtin.debug:
+        var: promotion.stdout
