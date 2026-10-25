@@ -103,6 +103,18 @@ class PlatformTests(unittest.TestCase):
             self.assertEqual(self.a.call('/billing/paystack/verify','POST',{'reference':ref})[0],409)
         self.assertEqual(self.a.call('/me')[1]['tenant']['balance'],1000)
 
+    def test_starter_catalog_seed_preserves_operator_edits(self):
+        self.assertEqual(self.a.call('/admin/marketplace/seed','POST',{})[0],403)
+        self.promote()
+        status,result=self.a.call('/admin/marketplace/seed','POST',{});self.assertEqual(status,200);self.assertEqual(result['added'],8)
+        products=self.b.call('/marketplace')[1];self.assertEqual(len(products),8)
+        p=products[0]
+        self.assertEqual(self.a.call('/admin/marketplace/product','POST',{'id':p['id'],'name':'Operator edited','description':'Custom scope','category':'Services','price_cents':12345,'active':False})[0],200)
+        self.assertEqual(self.a.call('/admin/marketplace/seed','POST',{})[1]['added'],0)
+        d=self.a.call('/admin/marketplace')[1]
+        kept=next(x for x in d['products'] if x['id']==p['id'])
+        self.assertEqual((kept['name'],kept['price'],kept['active']),('Operator edited',12345,0))
+
     def test_brand_assets_served_and_traversal_rejected(self):
         for path in ['/assets/postmaster-mark.png','/assets/postmaster-concept-portrait.png']:
             result={};env={'REQUEST_METHOD':'GET','PATH_INFO':path}
