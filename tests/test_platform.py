@@ -65,6 +65,44 @@ class PlatformTests(unittest.TestCase):
             self.assertNotIn(secret,json.dumps(self.a.call('/admin/audit')[1]))
         finally:path.unlink(missing_ok=True)
 
+    def test_marketplace_purchase_replay_isolation_and_refund(self):
+        self.promote();self.credit(10000)
+        product={'name':'Print design','description':'Operator service','category':'Services','price_cents':1500,'active':True}
+        self.assertEqual(self.b.call('/admin/marketplace/product','POST',product)[0],403)
+        status,p=self.a.call('/admin/marketplace/product','POST',product);self.assertEqual(status,200)
+        b={'product_id':p['id'],'quantity':2,'unit_price_cents':1500,'request_key':'purchase-one'}
+        self.assertEqual(self.a.call('/marketplace/purchase','POST',{**b,'unit_price_cents':1})[0],409)
+        status,order=self.a.call('/marketplace/purchase','POST',b);self.assertEqual(status,200)
+        self.assertEqual(order['total'],3000)
+        self.assertEqual(self.a.call('/marketplace/purchase','POST',b)[1]['id'],order['id'])
+        self.assertEqual(self.a.call('/me')[1]['tenant']['balance'],7000)
+        self.assertEqual(self.b.call('/marketplace/orders')[1],[])
+        action={'id':order['id'],'status':'refunded','note':'Customer request'}
+        self.assertEqual(self.a.call('/admin/marketplace/order','POST',action)[0],200)
+        self.assertEqual(self.a.call('/admin/marketplace/order','POST',action)[0],200)
+        self.assertEqual(self.a.call('/me')[1]['tenant']['balance'],10000)
+        self.assertEqual(self.a.call('/admin/marketplace/order','POST',{**action,'status':'completed'})[0],409)
+        self.assertEqual(self.a.call('/admin/marketplace/product','POST',{**product,'id':p['id'],'active':False})[0],200)
+        self.assertEqual(self.b.call('/marketplace')[1],[])
+
+    def test_paystack_verification_matches_amount_and_credits_once(self):
+        from unittest.mock import patch
+        from app import credentials,paystack_gateway
+        ref='pm-test-reference';stamp=core.now()
+        with core.connect() as c:
+            c.execute('INSERT INTO gateway_checkouts VALUES(?,?,?,?,?,?,?,0,?)',(ref,self.tenant,self.user,'paystack',1000,'USD','a@example.com',stamp))
+        result={'reference':ref,'status':'success','amount':1000,'currency':'USD','customer':{'email':'a@example.com'}}
+        with patch.object(paystack_gateway,'get',return_value='test-key'),patch.object(paystack_gateway,'request',return_value=result) as provider:
+            self.assertEqual(self.b.call('/billing/paystack/verify','POST',{'reference':ref})[0],404)
+            self.assertEqual(self.a.call('/billing/paystack/verify','POST',{'reference':ref})[0],200)
+            self.assertEqual(self.a.call('/billing/paystack/verify','POST',{'reference':ref})[0],200)
+            self.assertEqual(provider.call_count,1)
+        self.assertEqual(self.a.call('/me')[1]['tenant']['balance'],1000)
+        with core.connect() as c:c.execute('UPDATE gateway_checkouts SET credited=0 WHERE id=?',(ref,))
+        with patch.object(paystack_gateway,'get',return_value='test-key'),patch.object(paystack_gateway,'request',return_value={**result,'amount':999}):
+            self.assertEqual(self.a.call('/billing/paystack/verify','POST',{'reference':ref})[0],409)
+        self.assertEqual(self.a.call('/me')[1]['tenant']['balance'],1000)
+
     def test_brand_assets_served_and_traversal_rejected(self):
         for path in ['/assets/postmaster-mark.png','/assets/postmaster-concept-portrait.png']:
             result={};env={'REQUEST_METHOD':'GET','PATH_INFO':path}
