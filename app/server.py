@@ -207,12 +207,28 @@ def safe_csv(value): return "'"+value if value.startswith(('=','+','-','@','\t',
 
 def admin(c,r):
     p=r.path; b=r.body; user=r.user['id']
+    if p=='/api/admin/audit' and r.method=='GET': return [dict(x) for x in c.execute('SELECT * FROM audit ORDER BY id DESC LIMIT 1000')]
     if p=='/api/admin/overview': return {'tenants':[dict(x) for x in c.execute('SELECT * FROM tenants ORDER BY created DESC')],'users':[dict(x) for x in c.execute('SELECT id,email,name,active,superadmin,created FROM users ORDER BY created DESC')],'mail':[resource(x) for x in c.execute('SELECT * FROM mail ORDER BY created DESC LIMIT 1000')],'banks':[resource(x) for x in c.execute("SELECT * FROM resources WHERE kind='banks'")],'tickets':[resource(x) for x in c.execute("SELECT * FROM resources WHERE kind='tickets'")],'readiness':{'smtp':bool(os.environ.get('SMTP_HOST')),'fulfillment':'manual','payments':'stripe' if __import__('app.payments',fromlist=['ready']).ready() else 'manual audited credits','bank_verification':'operator verified provider reference required'}}
     if p.startswith('/api/admin/print/') and r.method=='GET':
         ident=p.split('/')[-1]; row=c.execute('SELECT * FROM mail WHERE id=?',(ident,)).fetchone(); require(row and row['kind']=='letter','Written letter not found',404); require(not json.loads(row['data']).get('document_id'),'Use uploaded source PDF'); from .printing import letter_pdf; audit(c,row['tenant_id'],user,'admin.print_download',ident); return (letter_pdf(json.loads(row['data']),cover=True),'application/pdf')
     if p.startswith('/api/admin/document/') and r.method=='GET':
         ident=p.split('/')[-1]; row=c.execute('SELECT * FROM documents WHERE id=?',(ident,)).fetchone(); require(row,'Document not found',404); path=DATA/'documents'/ident; require(path.exists(),'Document preview expired',410); audit(c,row['tenant_id'],user,'admin.document_access',ident); return (path.read_bytes(),'application/pdf')
     require(r.method=='POST','Method not allowed',405)
+    if p=='/api/admin/user-edit':
+        target=c.execute('SELECT * FROM users WHERE id=?',(b.get('id'),)).fetchone(); require(target,'User not found',404)
+        name=str(b.get('name','')).strip(); require(0<len(name)<=200,'Name must be 1–200 characters')
+        em=email(b.get('email')); require(not c.execute('SELECT 1 FROM users WHERE email=? AND id!=?',(em,target['id'])).fetchone(),'Email already registered',409)
+        c.execute('UPDATE users SET name=?,email=? WHERE id=?',(name,em,target['id']))
+        if em!=target['email']: c.execute('DELETE FROM sessions WHERE user_id=?',(target['id'],))
+        audit(c,None,user,'admin.user_edit',target['id']); return {'ok':True}
+    if p=='/api/admin/user-role':
+        target=c.execute('SELECT * FROM users WHERE id=?',(b.get('id'),)).fetchone(); require(target,'User not found',404)
+        require(type(b.get('superadmin'))==bool,'Superadmin must be true or false')
+        require(target['id']!=user,'Cannot change your own platform role',409)
+        require(target['active'] or not b['superadmin'],'Activate the account before promotion',409)
+        c.execute('UPDATE users SET superadmin=? WHERE id=?',(int(b['superadmin']),target['id']))
+        c.execute('DELETE FROM sessions WHERE user_id=?',(target['id'],))
+        audit(c,None,user,'admin.user_role',target['id']+' '+str(b['superadmin'])); return {'ok':True}
     if p=='/api/admin/credit':
         amount=b.get('amount_cents'); require(type(amount)==int and 1<=amount<=10000000,'Credit must be 1–10,000,000 cents'); require(b.get('reason'),'Payment reference or credit reason required'); money(c,b.get('tenant_id'),amount,str(b['reason'])); audit(c,b.get('tenant_id'),user,'admin.credit',str(amount)+' '+str(b['reason'])); return {'ok':True}
     if p=='/api/admin/plan':
@@ -259,7 +275,20 @@ def application(env,start_response):
     labels={200:'OK',400:'Bad Request',401:'Unauthorized',403:'Forbidden',404:'Not Found',405:'Method Not Allowed',409:'Conflict',410:'Gone',413:'Payload Too Large',429:'Too Many Requests',500:'Internal Server Error',503:'Service Unavailable'}
     headers.extend([('Content-Type',mime),('Content-Length',str(len(payload)))]); start_response(str(status)+' '+labels.get(status,'Error'),headers); return [payload]
 def main():
-    parser=argparse.ArgumentParser(); parser.add_argument('command',choices=['serve','init','admin']); parser.add_argument('--email'); parser.add_argument('--port',type=int,default=8080); args=parser.parse_args(); init()
+    parser=argparse.ArgumentParser(); parser.add_argument('command',choices=['serve','init','admin','promote']); parser.add_argument('--email'); parser.add_argument('--port',type=int,default=8080); args=parser.parse_args(); init()
+    if args.command=='promote':
+        em=email(args.email)
+        with connect() as c:
+            c.execute('BEGIN IMMEDIATE')
+            u=c.execute('SELECT id,active,superadmin FROM users WHERE email=?',(em,)).fetchone()
+            require(u,'Registered user not found; register the account first',404)
+            require(u['active'],'Activate the account before promotion',409)
+            if not u['superadmin']:
+                c.execute('UPDATE users SET superadmin=1 WHERE id=?',(u['id'],))
+                c.execute('DELETE FROM sessions WHERE user_id=?',(u['id'],))
+                audit(c,None,u['id'],'admin.cli_promote',em)
+            c.commit()
+        print('Super administrator verified: '+em)
     if args.command=='admin':
         import getpass
         em=email(args.email); pw=password(getpass.getpass('Administrator password (12+ characters): '))
