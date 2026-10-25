@@ -260,6 +260,9 @@ def admin(c,r):
         c.execute('UPDATE users SET superadmin=? WHERE id=?',(int(b['superadmin']),target['id']))
         c.execute('DELETE FROM sessions WHERE user_id=?',(target['id'],))
         audit(c,None,user,'admin.user_role',target['id']+' '+str(b['superadmin'])); return {'ok':True}
+    if p=='/api/admin/marketplace/seed':
+        from .starter_catalog import seed
+        return seed(c,user)
     if p=='/api/admin/marketplace/product':
         from .marketplace import save
         return save(c,user,b)
