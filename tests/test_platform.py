@@ -115,6 +115,13 @@ class PlatformTests(unittest.TestCase):
         kept=next(x for x in d['products'] if x['id']==p['id'])
         self.assertEqual((kept['name'],kept['price'],kept['active']),('Operator edited',12345,0))
 
+    def test_mobile_install_and_apk_routes(self):
+        for path,mime in [('/install','text/html'),('/downloads/postmaster.apk','application/vnd.android.package-archive'),('/downloads/postmaster.apk.sha256','text/plain')]:
+            result={};payload=b''.join(application({'REQUEST_METHOD':'GET','PATH_INFO':path},lambda status,headers:result.update(status=status,headers=dict(headers))))
+            self.assertTrue(result['status'].startswith('200'));self.assertEqual(result['headers']['Content-Type'],mime)
+            if path.endswith('.apk'):self.assertTrue(payload.startswith(b'PK'))
+            if path=='/install':self.assertIn(b'/downloads/postmaster.apk',payload)
+
     def test_brand_assets_served_and_traversal_rejected(self):
         for path in ['/assets/postmaster-mark.png','/assets/postmaster-concept-portrait.png']:
             result={};env={'REQUEST_METHOD':'GET','PATH_INFO':path}

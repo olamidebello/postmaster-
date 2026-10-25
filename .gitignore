@@ -4,3 +4,9 @@ __pycache__/
 data/
 .env
 *.sqlite*
+
+private-signing/
+mobile/android/build/
+mobile/android/dist/
+*.jks
+*.keystore

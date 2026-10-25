@@ -301,7 +301,7 @@ def application(env,start_response):
     status=200; c=None
     try:
         if not env.get('PATH_INFO','/').startswith('/api/'):
-            assets={'/app.js':('app.js','text/javascript'),'/style.css':('style.css','text/css'),'/assets/postmaster-mark.png':('assets/postmaster-mark.png','image/png'),'/assets/postmaster-concept-portrait.png':('assets/postmaster-concept-portrait.png','image/png')}
+            assets={'/install':('install.html','text/html'),'/downloads/postmaster.apk':('assets/postmaster.apk','application/vnd.android.package-archive'),'/downloads/postmaster.apk.sha256':('assets/postmaster.apk.sha256','text/plain'),'/app.js':('app.js','text/javascript'),'/style.css':('style.css','text/css'),'/assets/postmaster-mark.png':('assets/postmaster-mark.png','image/png'),'/assets/postmaster-concept-portrait.png':('assets/postmaster-concept-portrait.png','image/png')}
             path=env.get('PATH_INFO','/')
             require(not path.startswith('/assets/') or path in assets,'Asset not found',404)
             filename,mime=assets.get(path,('index.html','text/html')); payload=(ROOT/filename).read_bytes()

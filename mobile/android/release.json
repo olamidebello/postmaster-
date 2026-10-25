@@ -1,0 +1,27 @@
+{
+  "domain": "postmaster.justisolve.com",
+  "name": "Postmaster",
+  "category": "Business",
+  "package": "com.justisolve.postmaster",
+  "version": "1.0.0",
+  "version_code": 1,
+  "channel": "development",
+  "website": "https://postmaster.justisolve.com/",
+  "privacy": "https://postmaster.justisolve.com/#privacy",
+  "terms": "https://postmaster.justisolve.com/#terms",
+  "description": "Mail made simple. Send letters, manage recipients, buy marketplace services and access your workspace on Android.",
+  "features": [
+    "Branded Android HTTPS website client",
+    "User-selected PDF, image and CSV uploads",
+    "Home, Reload, Browser and back navigation",
+    "Marketplace, wallet and account workflows from the live website",
+    "External browser for hosted payment gateways"
+  ],
+  "limitations": "Internet and a working HTTPS website are required. Development edition; Android device acceptance testing is pending. No offline mail, native push or background fulfillment. External browser downloads may require signing in again.",
+  "apk_url": "https://africanappsstore.space/downloads/postmaster.apk",
+  "sha256": "187c3d0ca65d1a01070600eb4011d711153062d7265be35a8dfb345564d73b52",
+  "size_bytes": 295386,
+  "certificate_sha256": "b4064cd460b06836e9305f6691ae063a6073b9e0e9871f407fb602d69a31628f",
+  "download_status": "available",
+  "icon": "/downloads/postmaster-logo.png"
+}

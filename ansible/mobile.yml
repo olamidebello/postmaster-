@@ -1,0 +1,18 @@
+---
+- name: Deploy Postmaster and Android install page
+  ansible.builtin.import_playbook: olamidepanel.yml
+- name: Verify Android install links
+  hosts: all
+  become: true
+  tasks:
+    - name: Verify checked-in APK checksum
+      ansible.builtin.command:
+        argv: [sha256sum, -c, postmaster.apk.sha256]
+        chdir: /opt/postmaster/repo/app/assets
+      changed_when: false
+    - name: Verify public Android install routes
+      ansible.builtin.uri:
+        url: 'https://postmaster.justisolve.com{{ item }}'
+        validate_certs: true
+        status_code: 200
+      loop: [/install, /downloads/postmaster.apk, /downloads/postmaster.apk.sha256]
