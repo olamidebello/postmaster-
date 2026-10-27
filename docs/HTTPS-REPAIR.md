@@ -25,3 +25,7 @@ Sources: https://nginx.org/en/docs/http/server_names.html and https://eff-certbo
 
 ## Valid certificate on disk but local SNI mismatch
 The strict local TLS check now retries ten times with a two-second interval so that a successful asynchronous Nginx reload can finish replacing its workers. A persistent mismatch is not ignored. Before rollback the playbook saves `/var/lib/postmaster-https-repair/diagnostics.json` (root-only), showing the actual IPv4/IPv6 listener process, served certificate names, expected certificate names, and Nginx listen/server_name/certificate paths. It does not print private key contents. This helps distinguish an address-specific listener, a different TLS process, or an unexpected Nginx instance from reload timing. No unrelated listener is stopped or rewritten automatically.
+
+
+## Address-specific Nginx listener groups
+On the reported host, other sites explicitly declare `127.0.0.1`, `154.16.170.86` and bridge-interface addresses on ports 80/443. A Postmaster server with only wildcard `listen 443 ssl` is not part of those more-specific address groups. The repair template now joins every detected local IPv4 address plus IPv4/IPv6 loopback, while retaining wildcard IPv4/IPv6 listeners. Hostname/SNI matching can then select Postmaster on each relevant group. Addresses come from gathered server facts, not hardcoded DNS targets; other sites, DNS records and private keys remain unchanged. Normal Nginx configuration validation and strict TLS verification still determine success.
