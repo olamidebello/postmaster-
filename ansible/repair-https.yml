@@ -1,0 +1,166 @@
+---
+- name: Repair Postmaster hostname routing and HTTPS on its hosting server
+  hosts: all
+  become: true
+  vars:
+    postmaster_email: "{{ lookup('env', 'POSTMASTER_TLS_EMAIL') | default('olamideolatayobellocorporation@gmail.com', true) }}"
+    postmaster_site: /etc/nginx/sites-available/postmaster-postmaster.justisolve.com
+    postmaster_link: /etc/nginx/sites-enabled/postmaster-postmaster.justisolve.com
+  tasks:
+    - name: Install HTTPS repair dependencies
+      ansible.builtin.apt:
+        name: [nginx, certbot, openssl, python3]
+        state: present
+        update_cache: true
+    - name: Require the existing Postmaster backend
+      ansible.builtin.uri:
+        url: http://127.0.0.1:18870/api/health
+        return_content: true
+      register: backend
+      failed_when: backend.status != 200 or backend.json.status != 'ok'
+    - name: Check existing Nginx configuration and reject competing exact hosts
+      ansible.builtin.script:
+        cmd: ../scripts/check-postmaster-vhosts.py
+        executable: python3
+      changed_when: false
+    - name: Inspect managed site and enabled link
+      ansible.builtin.stat:
+        path: '{{ item }}'
+      loop: ['{{ postmaster_site }}', '{{ postmaster_link }}']
+      register: previous
+    - name: Reject an unexpected enabled site link
+      ansible.builtin.assert:
+        that:
+          - not previous.results[1].stat.exists or (previous.results[1].stat.islnk | default(false) and previous.results[1].stat.lnk_source == postmaster_site)
+        fail_msg: Enabled Postmaster site is not the expected symlink; inspect before changing it.
+    - name: Save existing managed site for rollback
+      ansible.builtin.slurp:
+        src: '{{ postmaster_site }}'
+      when: previous.results[0].stat.exists
+      register: saved_site
+    - name: Prepare ACME webroot
+      ansible.builtin.file:
+        path: /var/www/postmaster-acme/.well-known/acme-challenge
+        state: directory
+        mode: '0755'
+    - name: Inspect existing dedicated certificate
+      ansible.builtin.command:
+        argv: [openssl, x509, -in, /etc/letsencrypt/live/postmaster-justisolve-com/fullchain.pem, -noout, -checkhost, postmaster.justisolve.com, -checkend, '0']
+      register: existing_cert
+      changed_when: false
+      failed_when: false
+    - name: Repair the managed virtual host with rollback on failure
+      block:
+        - name: Install ACME routing while retaining any valid dedicated TLS certificate
+          ansible.builtin.template:
+            src: templates/postmaster-https.conf.j2
+            dest: '{{ postmaster_site }}'
+            mode: '0644'
+            backup: true
+          vars:
+            postmaster_cert_ready: '{{ existing_cert.rc == 0 }}'
+        - name: Enable the managed site
+          ansible.builtin.file:
+            src: '{{ postmaster_site }}'
+            dest: '{{ postmaster_link }}'
+            state: link
+        - name: Validate Nginx before reloading
+          ansible.builtin.command: nginx -t
+          changed_when: false
+        - name: Activate ACME routing
+          ansible.builtin.systemd:
+            name: nginx
+            state: reloaded
+        - name: Obtain a certificate for the exact hostname without modifying other sites
+          ansible.builtin.command:
+            argv: [certbot, certonly, --webroot, -w, /var/www/postmaster-acme, --cert-name, postmaster-justisolve-com, -d, postmaster.justisolve.com, --non-interactive, --agree-tos, --email, '{{ postmaster_email }}', --keep-until-expiring]
+          register: issued
+          changed_when: "'Successfully received certificate' in issued.stdout"
+        - name: Verify issued certificate hostname and validity
+          ansible.builtin.command:
+            argv: [openssl, x509, -in, /etc/letsencrypt/live/postmaster-justisolve-com/fullchain.pem, -noout, -checkhost, postmaster.justisolve.com, -checkend, '86400']
+          changed_when: false
+        - name: Install exact HTTPS routing to Postmaster
+          ansible.builtin.template:
+            src: templates/postmaster-https.conf.j2
+            dest: '{{ postmaster_site }}'
+            mode: '0644'
+          vars:
+            postmaster_cert_ready: true
+        - name: Validate final Nginx configuration
+          ansible.builtin.command: nginx -t
+          changed_when: false
+        - name: Activate repaired HTTPS routing
+          ansible.builtin.systemd:
+            name: nginx
+            state: reloaded
+        - name: Verify locally served certificate trust and hostname through SNI
+          ansible.builtin.command:
+            argv:
+              - python3
+              - -c
+              - |
+                import socket,ssl,json
+                with socket.create_connection(('127.0.0.1',443),timeout=10) as raw:
+                    with ssl.create_default_context().wrap_socket(raw,server_hostname='postmaster.justisolve.com') as conn:
+                        conn.sendall(b'GET /api/health HTTP/1.0\r\nHost: postmaster.justisolve.com\r\n\r\n')
+                        data=b''
+                        while True:
+                            chunk=conn.recv(65536)
+                            if not chunk:break
+                            data+=chunk
+                headers,body=data.split(b'\r\n\r\n',1)
+                assert b' 200 ' in headers.split(b'\r\n')[0] and json.loads(body)['status']=='ok', 'Wrong HTTPS backend'
+                print('Trusted HTTPS certificate and Postmaster routing verified')
+          changed_when: false
+        - name: Verify public HTTPS endpoint using normal DNS and certificate validation
+          ansible.builtin.uri:
+            url: https://postmaster.justisolve.com/api/health
+            validate_certs: true
+            return_content: true
+          register: public_health
+          failed_when: public_health.status != 200 or public_health.json.status != 'ok'
+      rescue:
+        - name: Restore previous managed configuration
+          ansible.builtin.copy:
+            content: '{{ saved_site.content | b64decode }}'
+            dest: '{{ postmaster_site }}'
+            mode: '0644'
+          when: previous.results[0].stat.exists
+        - name: Remove newly created site link on rollback
+          ansible.builtin.file:
+            path: '{{ postmaster_link }}'
+            state: absent
+          when: not previous.results[1].stat.exists
+        - name: Remove newly created site file on rollback
+          ansible.builtin.file:
+            path: '{{ postmaster_site }}'
+            state: absent
+          when: not previous.results[0].stat.exists
+        - name: Check restored configuration
+          ansible.builtin.command: nginx -t
+          changed_when: false
+        - name: Reload restored configuration
+          ansible.builtin.systemd:
+            name: nginx
+            state: reloaded
+        - name: Stop and report repair failure
+          ansible.builtin.fail:
+            msg: 'HTTPS repair failed and managed routing was restored. Review the failed task, domain A/AAAA records, inbound ports 80/443, and any duplicate exact-host configuration.'
+    - name: Install certificate renewal reload hook
+      ansible.builtin.copy:
+        dest: /etc/letsencrypt/renewal-hooks/deploy/postmaster-nginx-reload
+        mode: '0755'
+        content: |
+          #!/bin/sh
+          set -eu
+          nginx -t
+          systemctl reload nginx
+    - name: Enable certificate renewal timer
+      ansible.builtin.systemd:
+        name: certbot.timer
+        state: started
+        enabled: true
+    - name: Report verified repair
+      ansible.builtin.debug:
+        msg: 'Verified https://postmaster.justisolve.com: matching trusted certificate, correct backend, renewal enabled.'
