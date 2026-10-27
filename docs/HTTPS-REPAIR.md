@@ -21,3 +21,7 @@ Success requires: certificate hostname and validity checks; local SNI trust vali
 If the upstream proxy/CDN terminates TLS, its edge certificate must also include postmaster.justisolve.com. If public verification fails despite successful local verification, investigate DNS, IPv6 and any upstream proxy rather than bypassing browser certificate warnings.
 
 Sources: https://nginx.org/en/docs/http/server_names.html and https://eff-certbot.readthedocs.io/en/stable/using.html.
+
+
+## Valid certificate on disk but local SNI mismatch
+The strict local TLS check now retries ten times with a two-second interval so that a successful asynchronous Nginx reload can finish replacing its workers. A persistent mismatch is not ignored. Before rollback the playbook saves `/var/lib/postmaster-https-repair/diagnostics.json` (root-only), showing the actual IPv4/IPv6 listener process, served certificate names, expected certificate names, and Nginx listen/server_name/certificate paths. It does not print private key contents. This helps distinguish an address-specific listener, a different TLS process, or an unexpected Nginx instance from reload timing. No unrelated listener is stopped or rewritten automatically.
