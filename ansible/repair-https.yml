@@ -113,6 +113,10 @@
                 assert b' 200 ' in headers.split(b'\r\n')[0] and json.loads(body)['status']=='ok', 'Wrong HTTPS backend'
                 print('Trusted HTTPS certificate and Postmaster routing verified')
           changed_when: false
+          register: local_tls
+          retries: 10
+          delay: 2
+          until: local_tls.rc == 0
         - name: Verify public HTTPS endpoint using normal DNS and certificate validation
           ansible.builtin.uri:
             url: https://postmaster.justisolve.com/api/health
@@ -121,6 +125,16 @@
           register: public_health
           failed_when: public_health.status != 200 or public_health.json.status != 'ok'
       rescue:
+        - name: Capture served certificate and listener diagnostics before rollback
+          ansible.builtin.script:
+            cmd: ../scripts/diagnose-postmaster-tls.py
+            executable: python3
+          register: tls_diagnostics
+          changed_when: false
+          failed_when: false
+        - name: Show certificate and listener diagnostic report
+          ansible.builtin.debug:
+            var: tls_diagnostics.stdout_lines
         - name: Restore previous managed configuration
           ansible.builtin.copy:
             content: '{{ saved_site.content | b64decode }}'
@@ -146,7 +160,7 @@
             state: reloaded
         - name: Stop and report repair failure
           ansible.builtin.fail:
-            msg: 'HTTPS repair failed and managed routing was restored. Review the failed task, domain A/AAAA records, inbound ports 80/443, and any duplicate exact-host configuration.'
+            msg: 'HTTPS repair failed and managed routing was restored. Inspect /var/lib/postmaster-https-repair/diagnostics.json for served certificates, port 443 listener processes and Nginx listen/server_name directives. Review DNS A/AAAA and address-specific listeners before changing other sites.'
     - name: Install certificate renewal reload hook
       ansible.builtin.copy:
         dest: /etc/letsencrypt/renewal-hooks/deploy/postmaster-nginx-reload
