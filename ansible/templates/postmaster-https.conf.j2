@@ -1,7 +1,11 @@
 # Managed by Postmaster HTTPS repair; unrelated sites are not modified.
 server {
     listen 80;
+{% for address in (ansible_all_ipv4_addresses + ['127.0.0.1']) | unique | sort %}
+    listen {{ address }}:80;
+{% endfor %}
     listen [::]:80;
+    listen [::1]:80;
     server_name postmaster.justisolve.com;
     location ^~ /.well-known/acme-challenge/ { root /var/www/postmaster-acme; }
     location / { return 301 https://postmaster.justisolve.com$request_uri; }
@@ -9,7 +13,11 @@ server {
 {% if postmaster_cert_ready %}
 server {
     listen 443 ssl;
+{% for address in (ansible_all_ipv4_addresses + ['127.0.0.1']) | unique | sort %}
+    listen {{ address }}:443 ssl;
+{% endfor %}
     listen [::]:443 ssl;
+    listen [::1]:443 ssl;
     server_name postmaster.justisolve.com;
     ssl_certificate /etc/letsencrypt/live/postmaster-justisolve-com/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/postmaster-justisolve-com/privkey.pem;
